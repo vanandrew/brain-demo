@@ -8,9 +8,9 @@ import {
     BufferAttribute,
     Vector2,
     Raycaster,
-    DoubleSide,
+    SphereGeometry,
 } from 'three';
-import { flowRight, map, range } from 'lodash';
+import { map, range } from 'lodash';
 import { Lut } from 'three/examples/jsm/math/Lut.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -53,6 +53,8 @@ const active_data = {
 // Track the vertex index the mouse is hover over
 var active_vertex_index = null;
 var active_mesh = null;
+var active_point = null;
+var active_sphere = null;
 
 // Set global lock
 var lock = false;
@@ -90,7 +92,6 @@ function load_meshes() {
         geometry.setAttribute('color', new BufferAttribute(blank_array, 3));
         geometry.computeVertexNormals();
         const material = new MeshLambertMaterial({
-            "side": DoubleSide,
             color: 0xF5F5F5,
             "vertexColors": true
         });
@@ -134,7 +135,7 @@ function setup_lighting() {
 function set_visibility(scene, active_surface) {
     scene.traverse(function (child) {
         if (child instanceof Mesh) {
-            if (child.name.includes(active_surface)) {
+            if (child.name.includes(active_surface) || child.name.includes("active_sphere")) {
                 child.visible = true;
             } else {
                 child.visible = false;
@@ -146,22 +147,25 @@ function set_visibility(scene, active_surface) {
 // Set colors of meshes
 function set_colors(scene) {
     scene.traverse(function (child) {
-        if (child instanceof Mesh) {
-            for (let i = 0; i < 32492; i++) {
-                if (active_data["left"] == null || active_data["right"] == null) {
-                    let blank_array = new Float32Array(32492 * 3);
-                    blank_array.fill(1);
-                    child.geometry.setAttribute('color', new BufferAttribute(blank_array, 3));
-                    child.geometry.getAttribute('color').needsUpdate = true;
-                    break;
-                }
-                let color = active_data[child.name.includes("left") ? "left" : "right"][i];
-                if (color == undefined) {
-                    color = { r: 1, g: 1, b: 1 };
-                }
-                child.geometry.getAttribute('color').setXYZ(i, color.r, color.g, color.b);
+        if (child instanceof Mesh && !child.name.includes("active_sphere")) {
+            if (active_data["left"] == null || active_data["right"] == null) {
+                let blank_array = new Float32Array(32492 * 3);
+                blank_array.fill(1);
+                child.geometry.setAttribute('color', new BufferAttribute(blank_array, 3));
+                child.geometry.getAttribute('color').needsUpdate = true;
             }
-            child.geometry.getAttribute('color').needsUpdate = true;
+            else {
+                let color_array = convert_to_color(active_data[child.name.includes("left") ? "left" : "right"]);
+                for (let i = 0; i < 32492; i++) {
+                    
+                    let color = color_array[i];
+                    if (color == undefined) {
+                        color = { r: 1, g: 1, b: 1 };
+                    }
+                    child.geometry.getAttribute('color').setXYZ(i, color.r, color.g, color.b);
+                }
+                child.geometry.getAttribute('color').needsUpdate = true;
+            }
         }
     });
 }
@@ -226,8 +230,8 @@ function compute_seed() {
             return correlation(seed, get_seed(time_series["right_dconn"], i)); });
         
         // compute colors and set active data
-        active_data["left"] = convert_to_color(left_corr);
-        active_data["right"] = convert_to_color(right_corr);
+        active_data["left"] = left_corr;
+        active_data["right"] = right_corr;
     }
     document.getElementById("info").innerHTML = `Seed ${active_vertex_index} on ${active_mesh} hemisphere selected.`;
     lock = false;
@@ -276,11 +280,11 @@ function render() {
     folder.add(active_mode, "mode",
         {
             "Time": "time",
-            "Seed": "seed"
+            "Seed": "seed",
         }).onChange(function () { 
             active_data["left"] = null;
             active_data["right"] = null;
-            if (active_mode.mode == "time") {
+            if (active_mode.mode === "time") {
                 document.getElementById("info").innerHTML = "Brain Demo";
                 lut.setMax(2);
                 lut.setMin(-2);
@@ -317,13 +321,24 @@ function render() {
         if (!event.ctrlKey) {
             return;
         }
-        if (!lock && active_mode.mode == "seed") {
+        if (!lock && active_mode.mode === "seed") {
             lock = true;
         }
         else {
             return;
         }
         document.getElementById("info").innerHTML = "Computing Seed Please Wait...";
+        // delete any existing sphere
+        if (active_sphere != null) {
+            scene.remove(active_sphere);
+        }
+        // create a new sphere
+        let active_sphere_geo = new SphereGeometry(1, 32, 16);
+        active_sphere_geo.translate(active_point.x, active_point.y, active_point.z);
+        active_sphere = new Mesh(active_sphere_geo, new MeshLambertMaterial({ color: 0xffffff }));
+        active_sphere.name = "active_sphere";
+        scene.add(active_sphere);
+
         setTimeout(compute_seed, 100);
     });
 
@@ -332,12 +347,16 @@ function render() {
 
     // Render loop
     function animate() {
-        if (active_mode["mode"] == "time") {
+        if (active_mode.mode === "time") {
+            if (active_sphere != null) {
+                scene.remove(active_sphere);
+                active_sphere = null;
+            }
             if ((new Date()).getTime() - current_time > 100) {
                 current_time = (new Date()).getTime();
                 if (time_series["left"] != null && time_series["right"] != null) {
-                    active_data["left"] = convert_to_color(get_time_at_t(time_series["left"], sim.t));
-                    active_data["right"] = convert_to_color(get_time_at_t(time_series["right"], sim.t));
+                    active_data["left"] = get_time_at_t(time_series["left"], sim.t);
+                    active_data["right"] = get_time_at_t(time_series["right"], sim.t);
                 }
                 if (active_data["left"] != null && active_data["right"] != null) {
                     set_colors(scene);
@@ -358,8 +377,19 @@ function render() {
                 // calculate objects intersecting the picking ray
                 const intersects = raycaster.intersectObjects(scene.children);
                 if (intersects.length > 0 && time_series["left_dconn"] != null && time_series["right_dconn"] != null) {
-                    active_vertex_index = intersects[0].face.a;
-                    active_mesh = intersects[0].object.name.includes("left") ? "left" : "right";
+                    // get the intersect with the active surface
+                    let intersect_object = null;
+                    for (let i = 0; i < intersects.length; i++) {
+                        if (intersects[i].object.name.includes(active_surface.surface)) {
+                            intersect_object = intersects[i];
+                            break;
+                        }
+                    }
+                    if (intersect_object != null) {
+                        active_vertex_index = intersect_object.face.a;
+                        active_mesh = intersect_object.object.name.includes("left") ? "left" : "right";
+                        active_point = intersect_object.point;
+                    }
                 };
                 set_colors(scene);
             }
